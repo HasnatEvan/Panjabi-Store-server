@@ -1,11 +1,12 @@
+require('dotenv').config();
 const express = require('express');
 const app = express();
 const cors = require('cors');
-require('dotenv').config();
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const nodemailer = require("nodemailer");
+const stripe=require('stripe')(process.env.PAYMENT_SECRET_KEY)
 const port = process.env.PORT || 5000;
 
 // Middleware Configuration
@@ -443,7 +444,83 @@ async function run() {
     })
 
 
+    // admin Statistics
+    app.get('/admin-stat', verifyToken, verifyAdmin, async (req, res) => {
+      try {
+          // মোট ইউজার এবং পাঞ্জাবির সংখ্যা বের করা
+          const totalUsers = await userCollection.countDocuments();
+          const totalPanjabi = await PanjabiCollection.estimatedDocumentCount();
+          const allPurchase = await purchasesCollection.find().toArray();
+  
+          // মোট রাজস্ব (Revenue) এবং মোট অর্ডার সংখ্যা বের করা
+          const orderDetails = await purchasesCollection.aggregate([
+              {
+                  $group: {
+                      _id: null,
+                      totalRevenue: { $sum: '$price' },
+                      totalOrder: { $sum: 1 },
+                  },
+              },
+              {
+                  $project: {
+                      _id: 0
+                  },
+              },
+          ]).next();
+  
+          // চার্ট ডাটা তৈরির জন্য `aggregate` কলেকশন
+          const chartData = await purchasesCollection.aggregate([
+              {
+                  $group: {
+                      _id: {
+                          $dateToString: {
+                              format: "%Y-%m-%d",
+                              date: { $toDate: "$_id" }
+                          }
+                      },
+                      quantity: { $sum: "$quantity" },
+                      price: { $sum: "$price" },
+                      order: { $sum: 1 }
+                  }
+              },
+              {
+                  $project: {
+                      _id: 0,
+                      date: "$_id",
+                      quantity: 1,
+                      order: 1,
+                      price: 1
+                  }
+              }
+          ]).toArray();  // ✅ `.next()` -> `.toArray()` করা হয়েছে, কারণ এটি একাধিক ডাটা ফেরত দেবে।
+  
+          // ফাইনাল ডাটা সেন্ড করা
+          res.send({ totalUsers, totalPanjabi, chartData, ...orderDetails });
+  
+      } catch (error) {
+          console.error("Error fetching admin statistics:", error);
+          res.status(500).send({ error: "Internal Server Error" });
+      }
+  });
+  
+// payment --------------------------------------->
+app.post('/create-payment-intent',verifyToken,async(req,res)=>{
+  const {quantity,panjabiId}=req.body
+  const panjabi=await PanjabiCollection.findOne({_id:new ObjectId (panjabiId)})
+  if(!panjabi){
+    return res.status(400).send({message :'Panjabi not Found'})
+  }
+  const totalPrice=quantity * panjabi.price *100 
+  const {client_secret} = await stripe.paymentIntents.create({
+    amount:totalPrice,
+    currency: 'usd',
+    automatic_payment_methods:{
+      enabled:true,
+    },
+});
+res.send({clientSecret:client_secret})
 
+})
 
 
 
